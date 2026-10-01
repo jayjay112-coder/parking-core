@@ -1,0 +1,27 @@
+
+74h595
+DATA / SER — pin 14	GPIO 13 — pin 15
+CLOCK / SRCLK — pin 11	GPIO 12 — pin 13
+LATCH / RCLK — pin 12	GPIO 14 — pin 12
+
+IR SENSORS
+#1 gpio  34 – pin5
+#2 gpio  35 – pin6
+#3 gpio  32 – pin7
+#4 gpio  33 – pin8
+#5 gpio  25 – pin9
+#6 gpio  26 – pin10
+
+RFIDs
+GPIO27  → RFID #1 SS
+GPIO16  → RFID #2 SS
+GPIO18  → SCK
+GPIO23  → MOSI
+GPIO19  → MISO
+GPIO17  → RST
+
+PCA9685	ESP32
+SDA	GPIO21 — Physical Pin 33
+SCL	GPIO22 — Physical Pin 36
+VCC	3.3V — Physical Pin 1
+GND	GND — Physical Pin 14

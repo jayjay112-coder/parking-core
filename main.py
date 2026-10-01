@@ -25,7 +25,7 @@ RATE_PER_HOUR = float(os.getenv("RATE_PER_HOUR", "20"))
 TZ_HOURS = float(os.getenv("TZ_HOURS", "8"))
 REQUIRE_PAYMENT = os.getenv("REQUIRE_PAYMENT", "1") == "1"
 BLOCK_ENTRY_WHEN_FULL = os.getenv("BLOCK_ENTRY_WHEN_FULL", "0") == "1"
-GRACE_PERIOD_SEC = float(os.getenv("GRACE_PERIOD_SEC", "300")) 
+GRACE_PERIOD_SEC = float(os.getenv("GRACE_PERIOD_SEC", "20")) 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS slots(
