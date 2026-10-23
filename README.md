@@ -16,12 +16,40 @@ The backend is built with Python (FastAPI) and uses a local SQLite database. It 
 1. Install Python on your PC.
 2. Open your terminal in the `parking-core` directory and install dependencies:
    ```bash
-   pip install -r requirements.txt
+      python -m venv .venv
+      .\.venv\Scripts\activate
+      pip install fastapi uvicorn firebase-admin pydantic
 
 1. Start the Uvicorn server:
    ```bash
     python -m uvicorn main:app --host 0.0.0.0 --port 8000
 2. Open a web browser and navigate to http://localhost:8000/ to view the live dashboard.
+
+# How to Share through Firebase
+
+Firebase Project Setup !!!
+You need a Firebase project to store the data in the cloud.
+Go to the Firebase Console and click Add Project (name it SmartParking).
+Once created, click Build > Firestore Database in the left menu and click Create Database. Start in Test Mode so both groups can read/write easily.
+Now, generate your security key: Go to Project Settings (the gear icon top left) > Service Accounts.
+Click Generate new private key.
+A .json file will download to your computer. Rename this file to serviceAccountKey.json.
+
+   CRITICAL: Move serviceAccountKey.json into your VS Code parking-core folder.
+   Open your .gitignore file and add serviceAccountKey.json to the bottom so you don't accidentally upload your database password to GitHub!
+
+1. Give Them Access to the Firebase Project
+   Open the Firebase Console.
+   Click the Gear Icon (Project Settings) in the top left and select Users and permissions.
+   Click Add member.
+   Enter the email addresses of the other group's developers and assign them the Editor role.
+   They will receive an email invite. Once accepted, they can look at the active_parking database live while you test your hardware.
+
+2. Share the Connection Keys (Securely)
+   If they are using a Backend (Python, Node.js, PHP, Java):
+   Send them the exact serviceAccountKey.json file you generated earlier. Send it via direct message or email. Warning: Tell them never to upload this file to a public GitHub repository, as it is the master password to the database.
+   If they are using a Frontend Website (React, Vue, plain HTML/JS):
+   Go to your Firebase Project Settings > General. Scroll down to "Your apps", click the Web icon (</>), and register a web app. Firebase will give you a block of configuration code (containing apiKey, projectId, etc.). Copy and paste that config to them.
 
 🚗 System Execution Flow
 Entry: Tap a unique RFID card on the Entry scanner. The server generates a dynamic Ticket ID (e.g., TKT-0001), the entry gate opens, and the dashboard marks the car as Driving (No Slot).

@@ -1,6 +1,6 @@
 """
-Parking core backend (FastAPI + SQLite)
-Dynamic ID generation, Grace Period, and Car-to-Slot Mapping applied.
+Parking core backend (FastAPI + SQLite + Firebase Hybrid)
+Dynamic ID generation, Grace Period, Car-to-Slot Mapping, and Checkout Sync applied.
 """
 import hmac
 import json
@@ -17,11 +17,23 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+# ================================================================
+# FIREBASE INITIALIZATION (Cloud Sync)
+# ================================================================
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Ensure you have your serviceAccountKey.json in the same folder!
+cred = credentials.Certificate("serviceAccountKey.json")
+firebase_admin.initialize_app(cred)
+fb_db = firestore.client()
+COLLECTION_NAME = "active_parking"
+
 # ---------------------------------------------------------------- config
 DB_PATH = os.getenv("DB_PATH", "parking.db")
 DEVICE_KEY = os.getenv("DEVICE_KEY", "change-me-device")
 NUM_SLOTS = 6
-RATE_PER_HOUR = float(os.getenv("RATE_PER_HOUR", "20"))
+RATE_PER_HOUR = float(os.getenv("RATE_PER_HOUR", "20")) # Fixed Flat Fee
 TZ_HOURS = float(os.getenv("TZ_HOURS", "8"))
 REQUIRE_PAYMENT = os.getenv("REQUIRE_PAYMENT", "1") == "1"
 BLOCK_ENTRY_WHEN_FULL = os.getenv("BLOCK_ENTRY_WHEN_FULL", "0") == "1"
@@ -44,7 +56,7 @@ CREATE TABLE IF NOT EXISTS parking_sessions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tag_uid TEXT NOT NULL,
   ticket_no TEXT,
-  slot_id INTEGER, -- Added to track which slot the car is in
+  slot_id INTEGER,
   entry_ts REAL NOT NULL,
   exit_ts REAL,
   status TEXT NOT NULL DEFAULT 'PARKED',
@@ -95,7 +107,7 @@ def log_event(con, etype: str, detail: dict):
 def fee_for(duration_s: float) -> float:
     if duration_s <= GRACE_PERIOD_SEC:
         return 0.0 # Free if they just enter and leave
-    return RATE_PER_HOUR * max(1, math.ceil(duration_s / 3600))
+    return RATE_PER_HOUR # Fixed Flat Rate (or if you want to implement hourly rate, you can use: math.ceil(duration_s / 3600) * RATE_PER_HOUR)
 
 def session_dict(r) -> dict:
     end = r["exit_ts"] or now()
@@ -190,6 +202,7 @@ def device_scan(body: ScanIn):
             (uid,),
         ).fetchone()
 
+        # --------------------------------- ENTRY
         if reader == "entry":
             if active:
                 log_event(con, "ENTRY_DENIED", {"uid": uid, "reason": "already_inside"})
@@ -204,23 +217,50 @@ def device_scan(body: ScanIn):
             sid = cur.lastrowid
             ticket_no = f"TKT-{sid:04d}"
             con.execute("UPDATE parking_sessions SET ticket_no=? WHERE id=?", (ticket_no, sid))
-            
             log_event(con, "ENTRY", {"uid": uid, "ticket_no": ticket_no, "session_id": sid})
+            
+            # --- FIREBASE CLOUD SYNC: Upload new session for checkout team
+            fb_db.collection(COLLECTION_NAME).document(uid).set({
+                "uid": uid,
+                "ticket_no": ticket_no,
+                "fee_due": RATE_PER_HOUR,
+                "payment_status": "unpaid",
+                "status": "parked"
+            })
+            
             return {"action": "open", "session_id": sid}
 
-        # exit reader still strictly requires the RFID scan to open
+        # --------------------------------- EXIT
         if not active:
             log_event(con, "EXIT_DENIED", {"uid": uid, "reason": "no_active_session"})
             return deny("no_active_session")
             
         due = fee_for(t - active["entry_ts"])
         
-        if REQUIRE_PAYMENT and not active["paid"] and due > 0:
+        # --- FIREBASE CLOUD SYNC: Check if the checkout team already processed payment
+        external_paid = False
+        fb_doc = fb_db.collection(COLLECTION_NAME).document(uid).get()
+        if fb_doc.exists and fb_doc.to_dict().get("payment_status") == "paid":
+            external_paid = True
+        
+        # Check if they need to pay, haven't paid locally, AND haven't paid via checkout team
+        if REQUIRE_PAYMENT and not active["paid"] and not external_paid and due > 0:
             log_event(con, "EXIT_DENIED", {"uid": uid, "reason": "unpaid", "session_id": active["id"], "fee_due": due})
             return deny("unpaid", session_id=active["id"], ticket_no=active["ticket_no"], fee_due=due)
             
+        # Update local SQLite DB
         con.execute("UPDATE parking_sessions SET exit_ts=?, status='EXITED', slot_id=NULL WHERE id=?", (t, active["id"]))
+        if external_paid:
+            con.execute("UPDATE parking_sessions SET paid=1, amount_paid=?, paid_ts=? WHERE id=?", (due, t, active["id"]))
+            
         log_event(con, "EXIT", {"uid": uid, "ticket_no": active["ticket_no"], "session_id": active["id"]})
+        
+        # --- FIREBASE CLOUD SYNC: Tell the checkout team the car has exited
+        fb_db.collection(COLLECTION_NAME).document(uid).update({
+            "status": "exited",
+            "payment_status": "paid"
+        })
+        
         return {"action": "open", "session_id": active["id"]}
 
 # ------------------------------------------------ payment
@@ -232,12 +272,20 @@ def pay_session(session_id: int, body: Optional[PayIn] = None):
             raise HTTPException(404, "session not found")
         if row["status"] == "EXITED":
             raise HTTPException(409, "session already closed")
+            
         amount = body.amount if body and body.amount is not None else fee_for(now() - row["entry_ts"])
+        
         con.execute(
             "UPDATE parking_sessions SET paid=1, amount_paid=?, paid_ts=? WHERE id=?",
             (amount, now(), session_id),
         )
         log_event(con, "PAYMENT", {"session_id": session_id, "ticket_no": row["ticket_no"], "amount": amount})
+        
+        # --- FIREBASE CLOUD SYNC: Sync local manual dashboard payments to the cloud
+        fb_db.collection(COLLECTION_NAME).document(row["tag_uid"]).update({
+            "payment_status": "paid"
+        })
+        
     return {"ok": True, "session_id": session_id, "amount_paid": amount}
 
 # ------------------------------------------------ read endpoints

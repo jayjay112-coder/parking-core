@@ -43,6 +43,14 @@ function fmt(sec) {
   return (h ? h + "h " : "") + (h || m ? m + "m " : "") + s + "s";
 }
 
+// A timer that the browser keeps counting by itself.
+// data-s is the value the server sent, tick() adds the seconds since then.
+function timer(sec) {
+  return '<span class="t" data-s="' + Number(sec) + '">' + fmt(sec) + "</span>";
+}
+
+let lastFetch = Date.now();
+
 async function api(path, opt) {
   const r = await fetch(path, opt);
   const j = await r.json().catch(() => ({}));
@@ -57,15 +65,16 @@ async function refresh() {
       api("/api/sessions?status=PARKED"),
       api("/api/events?limit=15")
     ]);
+    lastFetch = Date.now();
 
     document.getElementById("free").textContent = "(" + slots.free + " free)";
 
-    // Render Slots (Now includes the car ticket ID if occupied)
+    // Render Slots (includes the car ticket ID if occupied)
     document.getElementById("slots").innerHTML = slots.slots.map(s => {
       let carInfo = s.ticket_no ? `<div class="car-id">${esc(s.ticket_no)}</div>` : "";
       return '<div class="slot ' + (s.status === "EMPTY" ? "empty" : "occ") + '">' +
       "<b>Slot " + s.slot + "</b>" + esc(s.status) + carInfo +
-      "<br><small>" + fmt(s.seconds_in_state) + "</small></div>"
+      "<br><small>" + timer(s.seconds_in_state) + "</small></div>"
     }).join("");
 
     // Render Cars
@@ -75,7 +84,7 @@ async function refresh() {
         let actionStr = "";
         let feeStr = esc(c.fee_due);
         let locStr = c.slot_id ? `<b>Slot ${c.slot_id}</b>` : "<span class='muted'>Driving (No Slot)</span>";
-        
+
         // Handle Grace Period Logic visually
         if (c.fee_due === 0 && !c.paid) {
             feeStr = "₱0 (Grace Period)";
@@ -87,7 +96,7 @@ async function refresh() {
         }
 
         return "<tr><td>" + esc(c.ticket_no) + "</td><td>" + locStr + "</td><td>" + esc(c.entry_time) +
-        "</td><td>" + fmt(c.duration_seconds) + "</td><td>" + feeStr + "</td><td>" +
+        "</td><td>" + timer(c.duration_seconds) + "</td><td>" + feeStr + "</td><td>" +
         (c.paid ? "Yes" : "No") + "</td><td>" + actionStr + "</td></tr>"
       }).join("") : '<tr><td colspan="7" class="muted">No cars inside</td></tr>');
 
@@ -101,6 +110,14 @@ async function refresh() {
   }
 }
 
+// Runs every second in the browser: moves every timer forward by the time since the last fetch.
+function tick() {
+  const extra = (Date.now() - lastFetch) / 1000;
+  document.querySelectorAll(".t").forEach(el => {
+    el.textContent = fmt(Number(el.dataset.s) + extra);
+  });
+}
+
 async function pay(id) {
   try {
     await api("/api/sessions/" + id + "/pay", {
@@ -110,8 +127,15 @@ async function pay(id) {
   refresh();
 }
 
-refresh();
-setInterval(refresh, 2000);
+// Ask the server every 2 seconds, but only after the last answer arrived.
+// This stops slow replies from piling up and making the numbers skip.
+async function pollLoop() {
+  await refresh();
+  setTimeout(pollLoop, 2000);
+}
+
+pollLoop();
+setInterval(tick, 1000);
 </script>
 </body>
 </html>
