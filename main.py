@@ -29,6 +29,9 @@ firebase_admin.initialize_app(cred)
 fb_db = firestore.client()
 COLLECTION_NAME = "active_parking"
 
+last_fb_sync = 0.0
+SYNC_COOLDOWN_SEC = 5.0
+
 # ---------------------------------------------------------------- config
 DB_PATH = os.getenv("DB_PATH", "parking.db")
 DEVICE_KEY = os.getenv("DEVICE_KEY", "change-me-device")
@@ -318,6 +321,8 @@ def get_slots():
 
 @app.get("/api/sessions")
 def list_sessions(status: Optional[str] = None, limit: int = Query(50, le=500)):
+    global last_fb_sync
+    
     where, args = [], []
     if status:
         where.append("status=?")
@@ -327,15 +332,41 @@ def list_sessions(status: Optional[str] = None, limit: int = Query(50, le=500)):
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ?"
     args.append(limit)
+    
     with db() as con:
         rows = con.execute(sql, args).fetchall()
-    return [session_dict(r) for r in rows]
-
-@app.get("/api/events")
-def get_events(limit: int = Query(100, le=1000)):
-    with db() as con:
-        rows = con.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return [
-        {"id": r["id"], "time": iso(r["ts"]), "type": r["type"], "detail": json.loads(r["detail"] or "{}")}
-        for r in rows
-    ]
+        
+        # Convert all rows to dictionaries first
+        result = [session_dict(r) for r in rows]
+        
+        # Find ONLY the cars that are parked and owe money locally
+        unpaid_cars = [s for s in result if s["status"] == "PARKED" and not s["paid"] and s["fee_due"] > 0]
+        
+        current_time = now()
+        
+        # THROTTLE: Only run if we actually have unpaid cars AND 5 seconds have passed
+        if unpaid_cars and (current_time - last_fb_sync > SYNC_COOLDOWN_SEC):
+            last_fb_sync = current_time
+            try:
+                # BATCH QUERY: Ask Firebase 1 single question: "Who has paid?"
+                # This costs a maximum of 1 read operation!
+                paid_docs = fb_db.collection(COLLECTION_NAME).where("payment_status", "==", "paid").stream()
+                cloud_paid_uids = [doc.to_dict().get("uid") for doc in paid_docs]
+                
+                # Compare the cloud list against our local unpaid cars
+                for s_dict in unpaid_cars:
+                    if s_dict["tag_uid"] in cloud_paid_uids:
+                        
+                        # Save to SQLite so we never ask Firebase about this car again
+                        con.execute("UPDATE parking_sessions SET paid=1, amount_paid=?, paid_ts=? WHERE id=?", 
+                                   (s_dict["fee_due"], current_time, s_dict["session_id"]))
+                        
+                        # Update the Dashboard UI instantly
+                        s_dict["paid"] = True
+                        s_dict["amount_paid"] = s_dict["fee_due"]
+                        s_dict["paid_time"] = iso(current_time)
+                        print(f"Cloud Sync: Ticket {s_dict['ticket_no']} was paid at checkout!")
+            except Exception as e:
+                print(f"Firebase sync error: {e}")
+            
+    return result
