@@ -370,3 +370,13 @@ def list_sessions(status: Optional[str] = None, limit: int = Query(50, le=500)):
                 print(f"Firebase sync error: {e}")
             
     return result
+
+# ------------------------------------------------ activity log
+@app.get("/api/events")
+def get_events(limit: int = Query(100, le=1000)):
+    with db() as con:
+        rows = con.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [
+        {"id": r["id"], "time": iso(r["ts"]), "type": r["type"], "detail": json.loads(r["detail"] or "{}")}
+        for r in rows
+    ]
